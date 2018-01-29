@@ -18,8 +18,8 @@ import (
 var entropyPool sync.Pool
 
 func init() {
-	tnano := time.New().UTC().UnixNano()
-	for i := 0; i < 10; i++ {
+	tnano := time.Now().UTC().UnixNano()
+	for i := int64(0); i < 10; i++ {
 		entropyPool.Put(rand.New(rand.NewSource(tnano + i)))
 	}
 }
@@ -38,13 +38,13 @@ func NewApp(dataDir string, tokens []string) *App {
 	}
 }
 
-func (app *App) Start(port string) {
+func (app *App) Start(port, user, pass string) {
 	mux := http.NewServeMux()
 
 	staticFilesHandler := http.StripPrefix("/static/", http.FileServer(http.Dir("static")))
 	mux.Handle("/static/", staticFilesHandler)
 	mux.HandleFunc("/bulk/", app.handleBulk)
-	mux.HandleFunc("/", app.handleDashboard)
+	mux.Handle("/", basicAuthMiddleware(user, pass)(http.HandlerFunc(app.handleDashboard)))
 
 	log.Printf("started listening on port %s\n", port)
 	log.Fatalln(http.ListenAndServe(":"+port, mux))

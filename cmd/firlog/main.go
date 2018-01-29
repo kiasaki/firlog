@@ -23,8 +23,15 @@ func main() {
 	}
 	tokens := strings.Split(tokensString, ",")
 
+	var basicAuthString string
+	flag.StringVar(&basicAuthString, "basic-auth", getEnv("BASIC_AUTH", ""), "'user:pass' pair for basic auth")
+	basicAuthCredentials := strings.SplitN(basicAuthString, ":", 2)
+	if len(basicAuthCredentials) != 2 {
+		log.Fatalln("Missing `basic-auth` config")
+	}
+
 	app := firlog.NewApp(dataDir, tokens)
-	app.Start(port)
+	app.Start(port, basicAuthCredentials[0], basicAuthCredentials[1])
 }
 
 func getEnv(name, alt string) string {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/blevesearch/bleve"
 	"github.com/blevesearch/bleve/index"
+	"github.com/blevesearch/bleve/mapping"
 )
 
 type Log struct {
@@ -51,9 +52,16 @@ func (e *Engine) Index(logs []*Log) error {
 	return nil
 }
 
-func buildIndexMapping() (bleve.IndexMaping, error) {
-	mapping := bleve.NewIndexMapping()
-	return mapping, nil
+func buildIndexMapping() *mapping.IndexMappingImpl {
+	indexMapping := bleve.NewIndexMapping()
+
+	logMapping := bleve.NewDocumentMapping()
+	logMapping.AddFieldMappingsAt("time", bleve.NewDateTimeFieldMapping())
+	logMapping.AddFieldMappingsAt("level", bleve.NewTextFieldMapping())
+	logMapping.AddFieldMappingsAt("msg", bleve.NewTextFieldMapping())
+
+	indexMapping.DefaultMapping = logMapping
+	return indexMapping
 }
 
 func (e *Engine) indexFor(date string) (*bleve.Index, error) {
@@ -61,16 +69,13 @@ func (e *Engine) indexFor(date string) (*bleve.Index, error) {
 		return e.indexes[date], nil
 	}
 
+	var index *bleve.Index
 	indexPath := filepath.Join(e.dataDir, date+"_1.bleve")
 	_, err := os.Stat(indexPath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to check existence of index")
 	} else if os.IsNotExist(err) {
-		mapping, err := buildIndexMapping()
-		if err != nil {
-			return nil, err
-		}
-		index, err = bleve.New(indexPath, mapping)
+		index, err = bleve.New(indexPath, buildIndexMapping())
 		if err != nil {
 			return nil, fmt.Errorf("bleve new: %s", err.Error())
 		}
