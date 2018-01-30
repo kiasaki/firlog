@@ -2,6 +2,8 @@ package firlog
 
 import (
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"io"
 	"io/ioutil"
 	"log"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blevesearch/bleve"
 	"github.com/oklog/ulid"
 )
 
@@ -31,11 +34,17 @@ type App struct {
 }
 
 func NewApp(dataDir string, tokens []string) *App {
-	return &App{
+	app := &App{
 		DataDir: dataDir,
 		Tokens:  tokens,
 		Engines: map[string]*Engine{},
 	}
+
+	for _, token := range tokens {
+		app.engineForToken(token)
+	}
+
+	return app
 }
 
 func (app *App) Start(port, user, pass string) {
@@ -44,14 +53,72 @@ func (app *App) Start(port, user, pass string) {
 	staticFilesHandler := http.StripPrefix("/static/", http.FileServer(http.Dir("static")))
 	mux.Handle("/static/", staticFilesHandler)
 	mux.HandleFunc("/bulk/", app.handleBulk)
+	mux.Handle("/stats", basicAuthMiddleware(user, pass)(http.HandlerFunc(app.handleStats)))
 	mux.Handle("/", basicAuthMiddleware(user, pass)(http.HandlerFunc(app.handleDashboard)))
 
 	log.Printf("started listening on port %s\n", port)
 	log.Fatalln(http.ListenAndServe(":"+port, mux))
 }
 
+func (app *App) handleStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	response := map[string]interface{}{}
+	for token, engine := range app.Engines {
+		response[token] = engine.Stats()
+	}
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "Error serializing response", 500)
+		return
+	}
+	w.Write(responseJSON)
+}
+
 func (app *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(htmlDashboard))
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		token = app.Tokens[0]
+	}
+	engine := app.engineForToken(token)
+
+	from := r.URL.Query().Get("from")
+	if from == "" {
+		from = time.Now().UTC().Add(-1 * 24 * time.Hour).Format(time.RFC3339)
+	}
+	to := r.URL.Query().Get("to")
+	if to == "" {
+		to = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	query := r.URL.Query().Get("query")
+
+	queryWithTime := fmt.Sprintf(`%s time:>="%s" time:<="%s"`, query, from, to)
+	fmt.Println("query", queryWithTime)
+	search := bleve.NewSearchRequest(bleve.NewQueryStringQuery(queryWithTime))
+	search.SortBy([]string{"-time", "-_id"})
+	search.Fields = append(search.Fields, "time")
+	start := time.Now().UnixNano()
+	logs, err := engine.Search(search, 1000)
+	searchDuration := float64(time.Now().UnixNano()-start) / 1000000
+	if err != nil {
+		http.Error(w, "Error executing search", 500)
+		return
+	}
+
+	t := template.Must(template.New("").Parse(htmlDashboard))
+	err = t.Execute(w, map[string]interface{}{
+		"query":          query,
+		"tokens":         app.Tokens,
+		"selectedToken":  token,
+		"searchDuration": searchDuration,
+		"logsCount":      len(logs),
+		"logs":           logs,
+	})
+	if err != nil {
+		log.Println(err)
+		w.Write([]byte(err.Error()))
+	}
 }
 
 func (app *App) handleBulk(w http.ResponseWriter, r *http.Request) {
@@ -105,10 +172,12 @@ func (app *App) handleBulk(w http.ResponseWriter, r *http.Request) {
 		} else {
 			data["msg"] = message
 		}
+		id := newUlid()
+		data["id"] = id
 		data["time"] = parsedTime
 
 		parsedLogLines = append(parsedLogLines, &Log{
-			Id:   newUlid(),
+			Id:   id,
 			Time: parsedTime,
 			Data: data,
 		})
@@ -160,9 +229,69 @@ const htmlDashboard = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>firlog</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.6.2/css/bulma.min.css">
+  <style>
+	.logs {
+	  border-bottom: 1px solid #f5f5f5;
+	  border-left: 2px solid #f5f5f5;
+	  border-right: 2px solid #f5f5f5;
+	}
+	.logs__header {
+	  padding: 0 1rem;
+	  border-bottom: 1px solid #f5f5f5;
+	}
+	.log {
+	  font-size: 13px;
+	  padding: 0 1rem;
+	  border-bottom: 1px solid #f5f5f5;
+	  font-family: Menlo, Monaco, Lucida Console, Liberation Mono, DejaVu Sans Mono, Bitstream Vera 
+  Sans Mono, Courier New, monospace, serif;
+	}
+	.log__time { color: hsl(217, 71%, 53%); }
+	.log__data { font-weight: bold; }
+  </style>
 </head>
 <body>
-  firlog
+  <div class="container">
+	<form class="hero is-light is-small">
+	  <div class="hero-body columns">
+		<div class="column is-3">
+		  <div class="field">
+			<label class="label">Token</label>
+			<div class="control">
+			  <div class="select is-fullwidth">
+				<select name="token">
+				  {{$selectedToken := .selectedToken}}
+				  {{range $i, $token := .tokens}}
+					<option value="{{$token}}" {{if eq $token $selectedToken}}selected{{else}}{{end}}>{{$token}}</option>
+				  {{end}}
+				</select>
+			  </div>
+			</div>
+		  </div>
+		</div>
+		<div class="column">
+		  <div class="field">
+			<label class="label">Query</label>
+			<div class="control">
+			  <input class="input" type="text" name="query" placeholder="Query e.g.: 'started -worker port:8001'" value="{{.query}}">
+			</div>
+		  </div>
+		</div>
+	  </div>
+	</form>
+	<div class="logs">
+	  <div class="logs__header">
+		<strong>{{.logsCount}} results</strong> Took {{.searchDuration | printf "%.2f"}}ms
+	  </div>
+	  {{range $i, $log := .logs}}
+		<div class="log">
+		  <span class="log__time">{{$log.FormattedTime}}</span>
+		  <span class="log__msg">{{$log.FormattedMessage}}</span>
+		  <span class="log__data">{{$log.FormattedData}}</span>
+		</div>
+	  {{end}}
+	</div>
+  </div>
 </body>
 </html>
 `
