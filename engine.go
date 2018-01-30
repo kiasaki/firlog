@@ -86,6 +86,10 @@ func (e *Engine) Stats() map[string]map[string]interface{} {
 func (e *Engine) Search(search *bleve.SearchRequest, limit int) ([]*Log, error) {
 	logs := []*Log{}
 
+	if len(e.indexes) == 0 {
+		return []*Log{}, nil
+	}
+
 	// TODO extract and cache
 	group := bleve.NewIndexAlias()
 	for _, index := range e.indexes {
@@ -210,6 +214,11 @@ func (e *Engine) sortedIndexNames() []string {
 }
 
 func listIndexes(dataDir string) ([]string, error) {
+	err := os.MkdirAll(dataDir, os.ModePerm)
+	if err != nil {
+		return nil, err
+	}
+
 	d, err := os.Open(dataDir)
 	if err != nil {
 		return nil, err

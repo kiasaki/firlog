@@ -18,13 +18,10 @@ import (
 	"github.com/oklog/ulid"
 )
 
-var entropyPool sync.Pool
-
-func init() {
-	tnano := time.Now().UTC().UnixNano()
-	for i := int64(0); i < 10; i++ {
-		entropyPool.Put(rand.New(rand.NewSource(tnano + i)))
-	}
+var entropyPool = sync.Pool{
+	New: func() interface{} {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	},
 }
 
 type App struct {
@@ -76,6 +73,11 @@ func (app *App) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.Error(w, "Not found", 404)
+		return
+	}
+
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		token = app.Tokens[0]
@@ -102,6 +104,7 @@ func (app *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	logs, err := engine.Search(search, 1000)
 	searchDuration := float64(time.Now().UnixNano()-start) / 1000000
 	if err != nil {
+		log.Println("error searching: ", err)
 		http.Error(w, "Error executing search", 500)
 		return
 	}
