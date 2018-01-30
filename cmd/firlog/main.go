@@ -14,7 +14,7 @@ func main() {
 	flag.StringVar(&port, "port", getEnv("PORT", "3000"), "Port for the HTTP server to listen on")
 
 	var dataDir string
-	flag.StringVar(&dataDir, "dataDir", "data", "Specifies the directory to store data in")
+	flag.StringVar(&dataDir, "data-dir", getEnv("DATA_DIR", "data"), "Specifies the directory to store data in")
 
 	var tokensString string
 	flag.StringVar(&tokensString, "tokens", getEnv("TOKENS", ""), "Valid auth tokens")
